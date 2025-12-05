@@ -11,55 +11,63 @@ __global__ void softmax_kernel(const float* input, float* output, int N) {
 
 
      //use shared memory (shared by only by threads (per block)), load global into thread specific mem
-     extern __shared__  float s_input[];
-     unsigned int index = threadIdx.x + blockDim.x * 2 * blockIdx.x; //2 thread for better util
+     extern __shared__ float shared[];
+     float* s_input = shared;
+     float* m_input = shared + blockDim.x;
 
+     unsigned int index = threadIdx.x + blockDim.x * blockIdx.x;
      
-     unsigned int gridSize = blockDim.x * 2 * gridDim.x;
      s_input[threadIdx.x] = 0.0f;
+     m_input[threadIdx.x] = -INFINITY;
+     //load into 2 different shared arrays at once.
      //this way of loading, loads in data from 2 blocks at a time, the curr block and the one ahead.
-     while (index < N) {
-         s_input[threadIdx.x] += input[index];
-         if (index + blockDim.x < N) {
-             s_input[threadIdx.x] += input[index + blockDim.x];
-         }
-         index += gridSize;
+     if (index < N) {
+        m_input[threadIdx.x] = input[index];
      }
-     __syncthreads();
 
+    __syncthreads(); //think of sync thread as a way to pause, makes sures the number is fully right
     
      //max trick, subtract the max value of input before exponention
      __shared__  float max;
      for (unsigned int i = blockDim.x/2; i > 0; i >>= 1) { //>> 1 bit shift 1 is equivalent to dividing by 2
-        //first iteration by 128, then by 64, then by 32...
+        //first iteration by 128, then by 64, then by 32... and compares the max value from the other half
+        //goes through all threads in the block
         if (threadIdx.x < i) {
-            s_input[threadIdx.x] = fmaxf(s_input[threadIdx.x], s_input[i + threadIdx.x]); //Halfway through iteration
+            m_input[threadIdx.x] = fmaxf(m_input[threadIdx.x], m_input[i + threadIdx.x]); //Halfway through iteration
         }
-        __syncthreads();
+        __syncthreads(); //think of sync thread as a way to pause, makes sures the number is fully right
     }
     if (threadIdx.x == 0) {
-        max = s_input[0];
+        max = m_input[0];
     }
+    __syncthreads(); //think of sync thread as a way to pause, makes sures the number is fully right
 
-    __syncthreads();
 
     __shared__  float sum;
-    unsigned int indexX = threadIdx.x + blockDim.x * blockIdx.x; //2 thread for better util
+    if (index < N) {
+        s_input[threadIdx.x] = expf(input[index] - max);
+    }
+    __syncthreads(); //think of sync thread as a way to pause, makes sures the number is fully right
+
      //softmax (pow of 2 indexing)
      //Need to reverse bc otherwise memory would be overwritten if saved sequentially by threadidx
      for (unsigned int i = blockDim.x/2; i > 0; i >>= 1) { //>> 1 bit shift 1 is equivalent to dividing by 2
-         //first iteration by 128, then by 64, then by 32...
+         //first iteration by 128, then by 64, then by 32... and adds it to from the other half
+         //goes through all threads in the block
          if (threadIdx.x < i) {
-             s_input[threadIdx.x] += expf(s_input[i + threadIdx.x] - max); //Halfway through iteration
+             s_input[threadIdx.x] += s_input[i + threadIdx.x]; //Halfway through iteration
          }
          __syncthreads();
      }
+     
      if (threadIdx.x == 0) {
-        sum =s_input[0];
+        sum = s_input[0];
      }
-     __syncthreads();
-     if (indexX < N) {
-        output[indexX] = expf(input[indexX]-max)/sum;
+     __syncthreads(); //think of sync thread as a way to pause, makes sures the number is fully right
+
+
+     if (index < N) {
+        output[index] = expf(input[index]-max)/sum;
      }
      //Can unroll for further speed up
 
@@ -70,7 +78,7 @@ extern "C" void solve(const float* input, float* output, int N) {
     int threadsPerBlock = 256;
     int blocksPerGrid = (N + threadsPerBlock - 1) / threadsPerBlock;
 
-    softmax_kernel<<<blocksPerGrid, threadsPerBlock, threadsPerBlock * sizeof(float)>>>(input, output, N);    cudaDeviceSynchronize();
+    softmax_kernel<<<blocksPerGrid, threadsPerBlock, 2 * threadsPerBlock * sizeof(float)>>>(input, output, N);    cudaDeviceSynchronize();
 }
 
 void generate_test_arrays(float** input_cases, float** output_cases, int* sizes, int cases) {
