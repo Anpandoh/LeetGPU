@@ -10,7 +10,7 @@ __global__ void interleaved(const float* input, float* output, int N) {
     unsigned int index = threadIdx.x + blockDim.x * 2 * blockIdx.x; //2 thread for better util
     unsigned int gridSize = blockDim.x * 2 * gridDim.x;
     s_input[threadIdx.x] = 0.0f;
-    //this way of laoding, loads in data from 2 blocks at a time, the curr block and the one ahead.
+    //this way of loading, loads in data from 2 blocks at a time, the curr block and the one ahead.
     while (index < N) {
         s_input[threadIdx.x] += input[index];
         if (index + blockDim.x < N) {
